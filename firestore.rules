@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - role: string (required, 'admin' or 'user')
+    //   - createdAt: timestamp (optional)
+    //
+    // Collection: fact_checks
+    // Document ID: {factCheckId}
+    // Fields:
+    //   - claim: string (required)
+    //   - verdict: string (required)
+    //   - confidence: number (required)
+    //   - reason: string (required)
+    //   - authorUid: string (optional)
+    //   ... other optional fields
+    //
+    // Collection: raw_news
+    // Document ID: {articleId}
+    // Fields:
+    //   - article_id: string (required)
+    //   - title: string (required)
+    //   - url: string (required)
+    //   ... other optional fields
+    //
+    // Collection: live_facts
+    // Document ID: {factId}
+    // Fields:
+    //   - id: string (required)
+    //   - text: string (required)
+    //   - category: string (required)
+    //   ... other optional fields
+    //
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.authorUid;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() &&
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "m.kolhapurkar3529@gmail.com" && request.auth.token.email_verified == true));
+    }
+    
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+    
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+    
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+    
+    function isValidOptionalNumber(field) {
+      return !(field in request.resource.data) || request.resource.data[field] is number;
+    }
+    
+    function isValidOptionalTimestamp(field) {
+      return !(field in request.resource.data) || request.resource.data[field] is timestamp;
+    }
+    
+    function isValidOptionalBool(field) {
+      return !(field in request.resource.data) || request.resource.data[field] is bool;
+    }
+    
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt']) &&
+             hasRequiredFields(['uid', 'email', 'role']) &&
+             validStringLength('uid', 1, 100) &&
+             isValidEmail(data.email) &&
+             isValidOptionalString('displayName', 0, 100) &&
+             isValidOptionalString('photoURL', 0, 1000) &&
+             data.role in ['admin', 'user'] &&
+             isValidOptionalTimestamp('createdAt');
+    }
+    
+    function isValidFactCheck(data) {
+      return hasRequiredFields(['claim', 'verdict', 'confidence']) &&
+             validStringLength('claim', 1, 5000) &&
+             data.verdict in ['TRUE', 'FALSE', 'MISLEADING', 'UNVERIFIABLE', 'ERROR'] &&
+             data.confidence is number && data.confidence >= 0.0 && data.confidence <= 1.0 &&
+             isValidOptionalString('reason', 1, 5000) &&
+             isValidOptionalString('reasoning', 1, 5000) &&
+             isValidOptionalString('post_id', 1, 100) &&
+             isValidOptionalString('original_text', 1, 10000) &&
+             isValidOptionalString('supporting_fact_id', 1, 100) &&
+             isValidOptionalString('model_used', 1, 100) &&
+             isValidOptionalString('embedding_model', 1, 100) &&
+             isValidOptionalNumber('compression_ratio') &&
+             isValidOptionalNumber('processing_time_ms') &&
+             isValidOptionalTimestamp('timestamp') &&
+             isValidOptionalString('language', 1, 10) &&
+             isValidOptionalString('authorUid', 1, 100) &&
+             isValidOptionalString('userId', 1, 100) &&
+             (!( 'sources' in data ) || data.sources is list);
+    }
+
+    function isValidUserHistory(data) {
+      return hasRequiredFields(['claim', 'verdict']) &&
+             validStringLength('claim', 1, 5000) &&
+             data.verdict in ['TRUE', 'FALSE', 'MISLEADING', 'UNVERIFIABLE', 'ERROR'] &&
+             isValidOptionalNumber('confidence') &&
+             isValidOptionalString('reason', 1, 5000) &&
+             isValidOptionalString('post_id', 1, 100) &&
+             isValidOptionalString('model_used', 1, 100) &&
+             isValidOptionalTimestamp('timestamp');
+    }
+
+    function isValidAuditLog(data) {
+      return hasRequiredFields(['action', 'timestamp']) &&
+             validStringLength('action', 1, 100) &&
+             isValidOptionalString('keyName', 1, 100) &&
+             isValidOptionalString('details', 1, 5000) &&
+             data.timestamp is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && 
+                    isOwner(userId) && 
+                    isValidUser(request.resource.data) && 
+                    uidUnchanged() &&
+                    ((request.resource.data.role == 'user') || isAdmin());
+      allow update: if isAuthenticated() && 
+                    isOwner(userId) && 
+                    isValidUser(request.resource.data) && 
+                    uidNotModified() &&
+                    ((request.resource.data.role == resource.data.role) || isAdmin());
+      allow delete: if isAdmin();
+      
+      match /history/{historyId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+      
+      match /api_keys/{keyId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /audit_logs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidAuditLog(request.resource.data);
+      }
+    }
+    
+    match /fact_checks/{factCheckId} {
+      // Anyone can read fact checks (public dashboard)
+      allow read: if true;
+      // Only authenticated users can create fact checks, or the backend service account
+      allow create: if isAuthenticated() && isValidFactCheck(request.resource.data);
+      // Only admins can update or delete fact checks
+      allow update, delete: if isAdmin() && isValidFactCheck(request.resource.data);
+    }
+    
+    match /raw_news/{articleId} {
+      // Anyone can read raw news (public dashboard)
+      allow read: if true;
+      // Only admins or backend can write
+      allow write: if isAdmin();
+    }
+    
+    match /live_facts/{factId} {
+      // Anyone can read live facts
+      allow read: if true;
+      // Only admins or backend can write
+      allow write: if isAdmin();
+    }
+  }
+}

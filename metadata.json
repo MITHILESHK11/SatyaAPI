@@ -1,0 +1,7 @@
+{
+  "name": "SatyaAPI",
+  "description": "An end-to-end fact-checking API and dashboard for vernacular news.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
